@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>Gas Check — Should I Fill Up Today?</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+  <link rel="stylesheet" href="./style.css" />
+  <!-- Chart.js must load before main.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- ── HEADER / PROFILE BAR ─────────────────────────────── -->
+  <header class="app-header">
+    <h1 class="app-title">⛽ Gas Check</h1>
+    <div class="profile-bar">
+      <select id="profileSelect" aria-label="Vehicle profile" class="profile-select"></select>
+      <button type="button" id="profileEdit"   class="icon-btn" title="Edit vehicle"   aria-label="Edit vehicle">✏️</button>
+      <button type="button" id="profileAdd"    class="icon-btn" title="Add vehicle"    aria-label="Add vehicle">＋</button>
+      <button type="button" id="profileDelete" class="icon-btn" title="Delete vehicle" aria-label="Delete vehicle">🗑</button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ── INPUT FORM ─────────────────────────────────────── -->
+    <form id="gasForm" novalidate>
+      <fieldset>
+        <legend>Vehicle</legend>
+
+        <label for="tank_size">Tank size (gallons)</label>
+        <input type="number" id="tank_size" name="tank_size" min="1" step="0.1"
+               placeholder="e.g. 15" required inputmode="decimal" />
+
+        <!-- FEATURE 2: Visual fuel gauge replaces plain % input -->
+        <label for="fuel_level_range">Current fuel level</label>
+        <div class="fuel-gauge-wrap">
+          <svg id="arcGauge" class="arc-gauge" viewBox="0 0 200 110"
+               role="img" aria-label="Fuel gauge" aria-hidden="true">
+            <!-- Track (full upper semicircle, E → F) -->
+            <path class="gauge-track-arc" d="M 20,100 A 80,80 0 0,1 180,100"/>
+            <!-- Fill arc (updated by JS) -->
+            <path id="gaugeFillArc" class="gauge-fill-arc" d=""/>
+            <!-- Tick marks at E, ¼, ½, ¾, F (drawn on top of fill) -->
+            <line class="gauge-tick" x1="13"     y1="100"   x2="32"     y2="100"/>
+            <line class="gauge-tick" x1="38.48"  y1="38.48" x2="51.92"  y2="51.92"/>
+            <line class="gauge-tick gauge-tick-mid" x1="100"    y1="13"    x2="100"    y2="32"/>
+            <line class="gauge-tick" x1="161.52" y1="38.48" x2="148.08" y2="51.92"/>
+            <line class="gauge-tick" x1="187"    y1="100"   x2="168"    y2="100"/>
+            <!-- Labels -->
+            <text class="gauge-label" x="14"  y="108" text-anchor="end">E</text>
+            <text class="gauge-label" x="30"  y="40"  text-anchor="end">¼</text>
+            <text class="gauge-label" x="100" y="6"   text-anchor="middle">½</text>
+            <text class="gauge-label" x="170" y="40"  text-anchor="start">¾</text>
+            <text class="gauge-label" x="186" y="108" text-anchor="start">F</text>
+            <!-- Needle (JS rotates around pivot) -->
+            <g id="gaugeNeedle" transform="rotate(0, 100, 100)">
+              <line x1="100" y1="100" x2="24" y2="100" class="gauge-needle-line"/>
+            </g>
+            <!-- Pivot (drawn last, always on top) -->
+            <circle cx="100" cy="100" r="5.5" class="gauge-pivot"/>
+          </svg>
+          <div class="gauge-row">
+            <input type="range" id="fuel_level_range" min="0" max="100" step="1" value="50"
+                   aria-label="Fuel level percent" />
+          </div>
+          <div id="fuelOutput" class="fuel-output">50% · — gallons remaining</div>
+          <!-- hidden field keeps same ID so submit logic is unchanged -->
+          <input type="hidden" id="fuel_level_percent" name="fuel_level_percent" value="50" />
+        </div>
+
+        <label for="mpg">Fuel efficiency (MPG)</label>
+        <input type="number" id="mpg" name="mpg" min="1" step="0.1"
+               placeholder="e.g. 30" required inputmode="decimal" />
+
+        <label for="miles_per_week">Average miles per week</label>
+        <input type="number" id="miles_per_week" name="miles_per_week" min="0" step="1"
+               placeholder="e.g. 200" required inputmode="numeric" />
+      </fieldset>
+
+      <fieldset>
+        <legend>Location</legend>
+        <div class="zip-row">
+          <div class="zip-input">
+            <label for="zip_code">ZIP code</label>
+            <input type="text" id="zip_code" name="zip_code" placeholder="5-digit ZIP"
+                   required pattern="\d{5}" inputmode="numeric" maxlength="5" />
+          </div>
+          <button type="button" id="useLocation" class="secondary" title="Detect ZIP from GPS">
+            📍 Use my location
+          </button>
+        </div>
+        <p class="location-note">Location features may send your ZIP code or browser-approved location to third-party mapping/geocoding services to find nearby stations.</p>
+      </fieldset>
+
+      <!-- ── CURRENT PRICE & DEALS ─────────────────────────── -->
+      <fieldset id="dealsFieldset">
+        <legend>Current Price &amp; Deals <span class="optional-tag">optional</span></legend>
+        <label for="local_price">Your station's current price ($/gal)</label>
+        <input type="number" id="local_price" name="local_price"
+               min="0" step="0.001" placeholder="e.g. 3.459"
+               inputmode="decimal" />
+        <p class="field-hint">Enter the price shown at your pump. If left blank, the EIA weekly benchmark is used instead — cost estimates may differ from your actual price.</p>
+
+        <label for="gasbuddy_savings">GasBuddy discount ($/gal off posted price)</label>
+        <input type="number" id="gasbuddy_savings" name="gasbuddy_savings"
+               min="0" step="0.001" placeholder="e.g. 0.25"
+               inputmode="decimal" />
+        <div id="gasBuddyWarn" class="reward-warning hidden" role="alert"></div>
+
+        <label for="upside_cashback">Upside cash back ($/gal)</label>
+        <input type="number" id="upside_cashback" name="upside_cashback"
+               min="0" step="0.001" placeholder="e.g. 0.18"
+               inputmode="decimal" />
+        <div id="upsideWarn" class="reward-warning hidden" role="alert"></div>
+
+        <div id="stackabilityRow" class="stackability-row hidden">
+          <label for="stackability">Can you stack GasBuddy + Upside at this station?</label>
+          <select id="stackability">
+            <option value="unknown" selected>Unknown — don't count combined savings</option>
+            <option value="yes">Yes, confirmed stackable</option>
+            <option value="no">No — use the better deal only</option>
+          </select>
+        </div>
+
+        <p class="field-hint">Enter amounts shown in the GasBuddy or Upside app for your station. You must activate offers in those apps before fueling. This app does not connect to GasBuddy or Upside accounts — stacking is not guaranteed unless you confirm it at your station.</p>
+      </fieldset>
+
+      <!-- ── ALT STATION COMPARISON (Phase 3) ─────────────── -->
+      <div class="alt-toggle-wrap">
+        <button type="button" id="altStationToggle" class="alt-toggle-btn" aria-expanded="false">
+          ＋ Compare another station — is it worth the drive?
+        </button>
+      </div>
+
+      <fieldset id="altStationFieldset" class="hidden">
+        <legend>Alternate Station <span class="optional-tag">optional</span></legend>
+
+        <label for="alt_name">Station name (optional)</label>
+        <input type="text" id="alt_name" name="alt_name" placeholder="e.g. Costco, Shell on Oak St" />
+
+        <div class="alt-distance-row">
+          <div class="alt-distance-input">
+            <label for="alt_distance">Distance (miles)</label>
+            <input type="number" id="alt_distance" name="alt_distance"
+                   min="0.1" step="0.1" placeholder="e.g. 5"
+                   inputmode="decimal" />
+          </div>
+          <div class="alt-distance-input">
+            <label for="alt_distance_type">Distance type</label>
+            <select id="alt_distance_type" name="alt_distance_type">
+              <option value="one-way">One-way (I drive there &amp; back)</option>
+              <option value="round-trip">Round-trip (total both ways)</option>
+              <option value="detour">Detour (extra miles off my route)</option>
+            </select>
+          </div>
+        </div>
+
+        <label for="alt_price">Posted price at this station ($/gal)</label>
+        <input type="number" id="alt_price" name="alt_price"
+               min="0" step="0.001" placeholder="e.g. 3.199"
+               inputmode="decimal" />
+
+        <label for="alt_gasbuddy">GasBuddy discount at this station ($/gal off, optional)</label>
+        <input type="number" id="alt_gasbuddy" name="alt_gasbuddy"
+               min="0" step="0.001" placeholder="e.g. 0.25"
+               inputmode="decimal" />
+        <div id="altGasBuddyWarn" class="reward-warning hidden" role="alert"></div>
+
+        <label for="alt_upside">Upside cash back at this station ($/gal, optional)</label>
+        <input type="number" id="alt_upside" name="alt_upside"
+               min="0" step="0.001" placeholder="e.g. 0.18"
+               inputmode="decimal" />
+        <div id="altUpsideWarn" class="reward-warning hidden" role="alert"></div>
+
+        <div id="altStackabilityRow" class="stackability-row hidden">
+          <label for="alt_stackability">Can you stack GasBuddy + Upside at this station?</label>
+          <select id="alt_stackability">
+            <option value="unknown" selected>Unknown — don't count combined savings</option>
+            <option value="yes">Yes, confirmed stackable</option>
+            <option value="no">No — use the better deal only</option>
+          </select>
+        </div>
+
+        <p class="field-hint">Distance and posted price are required to compare. Travel fuel cost is based on your MPG and current fuel level. Rewards are optional — enter amounts shown in the GasBuddy or Upside app for this specific station.</p>
+
+        <button type="button" id="altStationHide" class="alt-hide-btn secondary">Hide alternate station</button>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" id="computeButton">Check Recommendation</button>
+        <span id="loading" role="status" aria-live="polite" class="loading-msg hidden">Fetching data…</span>
+      </div>
+      <p id="formError" class="error" aria-live="assertive"></p>
+    </form>
+
+    <!-- ── RESULTS ─────────────────────────────────────────── -->
+    <section id="result" class="result hidden" aria-labelledby="rec-heading">
+
+      <!-- FEATURE 7: Big recommendation + plain-language layout -->
+      <h2 id="rec-heading" class="sr-only">Recommendation</h2>
+      <div id="confidenceBadge" class="confidence-badge hidden"></div>
+      <div id="recommendationBox" class="recommendation">—</div>
+      <p id="reason" class="reason-text"></p>
+
+      <!-- Structured reasons (for/against fill-up) -->
+      <div id="reasonsDetail" class="reasons-detail hidden"></div>
+
+      <!-- FEATURE 7: Cost comparison cards -->
+      <div id="costCards" class="cost-cards hidden">
+        <div class="cost-card cost-now">
+          <div class="cost-label">Top off now</div>
+          <div id="costNow" class="cost-amount">—</div>
+          <div id="costNowSub" class="cost-sub"></div>
+        </div>
+        <div class="cost-vs">vs</div>
+        <div class="cost-card cost-wait">
+          <div class="cost-label">If you wait 1 week</div>
+          <div id="costWait" class="cost-amount">—</div>
+          <div id="costWaitSub" class="cost-sub"></div>
+        </div>
+      </div>
+
+      <!-- Phase 2A: Deal comparison (shown when local price + reward entered) -->
+      <div id="dealCompareWrap" class="deal-compare-wrap hidden"></div>
+
+      <!-- FEATURE 7: Days-remaining progress bar -->
+      <div id="daysBarWrap" class="days-bar-wrap hidden">
+        <div class="days-bar-header">
+          <span>Fuel remaining</span>
+          <strong id="daysLabel">—</strong>
+        </div>
+        <div class="days-track">
+          <div id="daysFill" class="days-fill"></div>
+        </div>
+        <div class="days-ticks">
+          <span>Now</span><span>7 days</span><span>14 days</span><span>21+ days</span>
+        </div>
+      </div>
+
+      <!-- Phase 3: Travel comparison -->
+      <div id="travelCompareWrap" class="travel-compare-wrap hidden"></div>
+
+      <!-- FEATURE 4: Price sparkline -->
+      <div id="sparklineWrap" class="chart-wrap hidden">
+        <div class="chart-header">
+          <h2 class="section-h2">Price Trend — last 8 weeks</h2>
+          <span id="chartBadge" class="chart-badge"></span>
+        </div>
+        <div class="chart-container">
+          <canvas id="sparklineCanvas"></canvas>
+        </div>
+      </div>
+
+      <!-- FEATURE 10: Nearby stations -->
+      <div id="stationsWrap" class="stations-wrap hidden">
+        <h2 class="section-h2">Nearby Stations <span class="section-sub">(within 10 mi)</span></h2>
+        <ul id="stationsList" class="stations-list"></ul>
+        <p id="stationsMsg" class="stations-msg"></p>
+      </div>
+
+      <!-- Calculation details (collapsible, no clutter by default) -->
+      <details class="calc-details">
+        <summary>Calculation details</summary>
+        <table id="detailsTable"><tbody></tbody></table>
+        <small id="dataSourceNote" class="source-note"></small>
+      </details>
+
+      <!-- FEATURE 6: Quick log CTA after checking -->
+      <div class="log-cta">
+        <button type="button" id="logFillupBtn" class="secondary">📋 Log this fill-up</button>
+      </div>
+    </section>
+
+    <!-- History shortcut always visible at bottom -->
+    <div class="history-bar">
+      <button type="button" id="openFillLog" class="ghost-btn">📋 View fill-up history</button>
+    </div>
+
+  </main>
+
+  <!-- ══ VEHICLE PROFILE DIALOG (Feature 5) ════════════════ -->
+  <dialog id="profileDialog" aria-labelledby="profileDialogTitle">
+    <div class="dlg-header">
+      <h2 id="profileDialogTitle">Vehicle Profile</h2>
+      <button type="button" class="dlg-close" id="profileDlgClose" aria-label="Close">✕</button>
+    </div>
+    <div class="dlg-body">
+      <label for="pName">Vehicle name</label>
+      <input type="text" id="pName" placeholder="e.g. My Truck" />
+      <label for="pTank">Tank size (gallons)</label>
+      <input type="number" id="pTank" min="1" step="0.1" placeholder="e.g. 15" />
+      <label for="pMpg">Fuel efficiency (MPG)</label>
+      <input type="number" id="pMpg" min="1" step="0.1" placeholder="e.g. 30" />
+      <label for="pMiles">Average weekly miles</label>
+      <input type="number" id="pMiles" min="0" step="1" placeholder="e.g. 200" />
+    </div>
+    <div class="dlg-footer">
+      <button type="button" id="profileSave" class="primary-btn">Save</button>
+      <button type="button" class="secondary" id="profileDlgCancel">Cancel</button>
+    </div>
+  </dialog>
+
+  <!-- ══ FILL-UP LOG DIALOG (Feature 6) ════════════════════ -->
+  <dialog id="fillLogDialog" aria-labelledby="fillLogTitle">
+    <div class="dlg-header">
+      <h2 id="fillLogTitle">Fill-up History</h2>
+      <button type="button" class="dlg-close" id="fillLogClose" aria-label="Close">✕</button>
+    </div>
+    <div class="dlg-body">
+      <!-- Add entry form -->
+      <form id="fillEntryForm" novalidate class="fill-entry-form">
+        <div class="fill-row">
+          <div class="fill-field">
+            <label for="logDate">Date</label>
+            <input type="date" id="logDate" required />
+          </div>
+          <div class="fill-field">
+            <label for="logPrice">Price/gal ($)</label>
+            <input type="number" id="logPrice" min="0" step="0.001" placeholder="3.459" required />
+          </div>
+          <div class="fill-field">
+            <label for="logGallons">Gallons</label>
+            <input type="number" id="logGallons" min="0.1" step="0.01" placeholder="10.5" required />
+          </div>
+          <button type="submit" class="primary-btn fill-add-btn">Add</button>
+        </div>
+        <p id="fillEntryError" class="error"></p>
+      </form>
+
+      <!-- Stats summary -->
+      <div id="fillStats" class="fill-stats hidden"></div>
+
+      <!-- History table -->
+      <div id="fillTableWrap" class="fill-table-wrap hidden">
+        <table class="fill-table">
+          <thead>
+            <tr><th>Date</th><th>$/gal</th><th>Gallons</th><th>Total</th><th></th></tr>
+          </thead>
+          <tbody id="fillLogBody"></tbody>
+        </table>
+      </div>
+      <p id="emptyLog" class="empty-log">No fill-ups logged yet. Add your first one above.</p>
+    </div>
+  </dialog>
+
+  <script src="./main.js" defer></script>
+</body>
+</html>
